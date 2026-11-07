@@ -1,0 +1,15 @@
+// Written by deploy/deploy.sh for the site "__SITE__" — edit deploy/public.wrangler.template.jsonc, not this file.
+// The public Worker: Astro renders pages and posts with BMS's own code; everything
+// else (admin, API, uploads, archives, search) goes to the admin Worker.
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "__SITE__",
+  "main": "@astrojs/cloudflare/entrypoints/server",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  __ROUTES__
+  "services": [{ "binding": "BMS", "service": "__SITE__-admin" }],
+  "d1_databases": [{ "binding": "DB", "database_name": "__DB_NAME__", "database_id": "__DB_ID__", "migrations_dir": "../drizzle-d1" }],
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "__BUCKET__" }],
+  "images": { "binding": "IMAGES" }
+}

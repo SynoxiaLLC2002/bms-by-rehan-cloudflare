@@ -1,0 +1,21 @@
+// Written by deploy/deploy.sh for the site "__SITE__" — edit deploy/admin.wrangler.template.jsonc, not this file.
+// The admin Worker: BMS (Next.js) — admin, API, uploads, images, cron. Visitors reach
+// it only through the public Worker (astro/wrangler.jsonc), so it has no address of its
+// own: a second public copy of the site would be duplicate content.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "main": "cf-worker.ts",
+  "name": "__SITE__-admin",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
+  "vars": { "AUTH_TRUST_HOST": "true" },
+  "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "__SITE__-admin" }],
+  "d1_databases": [{ "binding": "DB", "database_name": "__DB_NAME__", "database_id": "__DB_ID__", "migrations_dir": "drizzle-d1" }],
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "__BUCKET__" }],
+  "images": { "binding": "IMAGES" },
+  // Every 15 minutes: publish scheduled posts. 03:00: the daily backup (cf-worker.ts).
+  "triggers": { "crons": ["*/15 * * * *", "0 3 * * *"] }
+}

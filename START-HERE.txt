@@ -1,0 +1,111 @@
+BMS ON CLOUDFLARE — PUT A SITE ONLINE
+=====================================
+
+What you get: a full BMS site (admin, editor, Claude connector, fast public pages)
+running on Cloudflare. No hosting, no cPanel. One Cloudflare plan of $5 a month
+covers ALL your sites together.
+
+You need: a Windows PC, a Cloudflare account, about 30 minutes the first time.
+
+
+PART 1 — ONE TIME ONLY
+----------------------
+
+1. Cloudflare account and plan
+   a. Go to dash.cloudflare.com and sign up (or sign in).
+   b. In the left menu click "Workers & Pages" (an orange cloud icon with brackets).
+   c. Open "Plans" and choose "Workers Paid" ($5/month). The free plan is too small
+      for BMS — pages would fail.
+
+2. Docker Desktop (the program that builds your site)
+   a. Go to docker.com, click "Download Docker Desktop", choose "Windows", install.
+   b. Restart the PC if it asks.
+   c. Open "Docker Desktop" from the Start menu. Wait until the bottom-left corner
+      says "Engine running" (green). Leave it open whenever you deploy.
+
+3. This folder
+   Unzip bms-cloudflare-<version>.zip to your Desktop. You get a folder called
+   "bms-cloudflare". Keep it — you will use it for every site and every update.
+
+
+PART 2 — CREATE A SITE
+----------------------
+
+1. Choose a site name: small letters, numbers and dashes, starting with a letter.
+   Example:  my-site
+   (This is only an internal name. Your real domain comes later.)
+
+2. Open the "bms-cloudflare" folder. Click on an empty white area inside the folder
+   with the RIGHT mouse button and choose "Open in Terminal".
+   A dark window opens.
+
+3. Type this (with your site name) and press Enter:
+
+      powershell -ExecutionPolicy Bypass -File .\deploy.ps1 -Site my-site
+
+4. The very first time only:
+   - It installs packages (5–10 minutes). Wait.
+   - It shows "Open the link below in your browser". Copy the long link that starts
+     with https://dash.cloudflare.com/oauth2/auth (select it, press Enter to copy),
+     paste it into Chrome ON THIS PC, sign in, click "Allow".
+     The window continues by itself.
+
+5. Wait until you see "7/7 Done" (about 10 minutes). It prints:
+      Site:        https://my-site.<your-name>.workers.dev
+      Admin:       https://.../admin/setup
+      Setup code:  something like 4MpLPnHldeU-
+
+6. Open the Admin link. Fill in:
+      Setup token  ->  the Setup code from step 5 (copy it exactly, dashes included)
+      Name, Email, Password  ->  yours
+   Click "Continue", scan the QR code with Google Authenticator (or Microsoft
+   Authenticator), type the 6-digit code. You are in the admin.
+
+7. In the admin: left menu "Settings" -> "Site URL" -> paste your site address
+   (from step 5) -> "Save". Do this before writing pages: Google reads this address.
+
+IMPORTANT: the folder "sites" inside bms-cloudflare now holds a file named after
+your site (my-site.env). It has the site's secret keys. Never delete it,
+never share it, and copy it when you copy the folder to another PC.
+
+
+PART 3 — YOUR OWN DOMAIN
+------------------------
+
+1. Add the domain to Cloudflare: dash.cloudflare.com -> "Add a domain" (top right,
+   or "Websites" -> "Add a domain"), type it, choose the Free plan, and change the
+   nameservers at your registrar to the two Cloudflare shows you. Wait until
+   Cloudflare says the domain is "Active" (minutes to a few hours).
+
+2. Run the same command again with the domain added:
+
+      powershell -ExecutionPolicy Bypass -File .\deploy.ps1 -Site my-site -Domain example.com
+
+   (Just the domain: no https://, no www.)
+
+3. Admin -> "Settings" -> "Site URL" -> https://example.com -> "Save".
+
+
+PART 4 — UPDATES
+----------------
+
+When you get a new version of this folder:
+1. Unzip it, then copy your old "sites" folder into the new "bms-cloudflare" folder.
+2. Run the same command as in Part 2 step 3 for each site.
+Your pages, posts, images and settings are not touched — only the program is updated.
+
+
+IF SOMETHING GOES WRONG
+-----------------------
+- "Docker Desktop is not running"  ->  open Docker Desktop, wait for "Engine running".
+- "running scripts is disabled"     ->  you typed .\deploy.ps1 alone; use the full
+                                        "powershell -ExecutionPolicy Bypass ..." line.
+- The link page says the address cannot be reached after "Allow"  ->  you opened the
+  link on another device. Open it in Chrome on the same PC that runs the command.
+- Anything else: run the same command again. It is safe — it skips what already
+  exists and finishes what did not.
+
+What is different from BMS on cPanel: Plugins and one-click Updates are not in the
+menu (updates are Part 4). Scheduled posts publish by themselves, and a backup of
+the site is made every night at 03:00; the database can also be restored by
+Cloudflare to any moment in the last 30 days.
