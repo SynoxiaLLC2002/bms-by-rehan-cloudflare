@@ -27,6 +27,8 @@ interface Env {
   IMAGES?: {
     input(s: ReadableStream): { transform(o: Record<string, unknown>): { output(o: { format: string; quality?: number }): Promise<{ response(): Response }> } };
   };
+  /** "1" = never resize: every image request gets the original upload (a per-site Worker secret, `wrangler secret put NO_RESIZE`). */
+  NO_RESIZE?: string;
 }
 interface Ctx { waitUntil(p: Promise<unknown>): void }
 
@@ -67,11 +69,21 @@ async function variant(request: Request, ctx: Ctx, env: Env, src: { key: string;
   const original = await env.MEDIA.get(src.key);
   if (!original) return notFound();
   let res: Response;
-  if (!env.IMAGES || !RESIZABLE.test(src.key)) {
-    res = new Response(original.body, { headers: { "Content-Type": original.httpMetadata?.contentType ?? "application/octet-stream", "Cache-Control": YEAR, ...SAFE } });
+  const asIs = (o: R2Obj, cacheControl = YEAR) => new Response(o.body, { headers: { "Content-Type": o.httpMetadata?.contentType ?? "application/octet-stream", "Cache-Control": cacheControl, ...SAFE } });
+  if (!env.IMAGES || !RESIZABLE.test(src.key) || env.NO_RESIZE === "1") {
+    res = asIs(original); // NO_RESIZE: the site's uploads are already small WebP; no Cloudflare Images transformations at all
   } else {
-    const out = await env.IMAGES.input(original.body).transform({ width, fit: "scale-down" }).output({ format, quality });
-    res = new Response(out.response().body, { headers: { "Content-Type": format, "Cache-Control": YEAR, Vary: "Accept", ...SAFE } });
+    try {
+      const out = await env.IMAGES.input(original.body).transform({ width, fit: "scale-down" }).output({ format, quality });
+      res = new Response(out.response().body, { headers: { "Content-Type": format, "Cache-Control": YEAR, Vary: "Accept", ...SAFE } });
+    } catch (e) {
+      // A refused transform (9422: the account's free transformations are used up) used to answer 500 and show a
+      // broken image. Serve the original instead, cached for an hour only, so the resize is tried again later.
+      console.error("[images]", src.key, String(e).slice(0, 200));
+      const again = await env.MEDIA.get(src.key); // the failed transform consumed original.body
+      if (!again) return notFound();
+      return asIs(again, "public, max-age=3600");
+    }
   }
   if (request.method === "GET") ctx.waitUntil(cache.put(cacheKey, res.clone()));
   return res;
