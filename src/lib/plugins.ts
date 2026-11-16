@@ -2,7 +2,7 @@
 //
 // A plugin is a folder of HTML, CSS and JavaScript that runs in the visitor's
 // browser — a calculator, a converter, a checker. It is installed from a zip
-// in Admin → Plugins, lives under plugins/<slug>/ next to the app, and is placed in
+// in Admin → Plugins, lives in the site's R2 bucket (see R2_PREFIX), and is placed in
 // content with `[slug]` (in a paragraph or an HTML block) or the Plugin
 // block. No rebuild, no upload of the site: the same experience as a
 // WordPress plugin, for the kind of plugin that does not need a server.
@@ -25,19 +25,59 @@
 // rules below stop a zip from writing outside its folder or shipping
 // anything that is not a static asset.
 
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import JSZip from "jszip";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { plugins } from "@/lib/db/schema";
 import { sanitizeSvg } from "@/lib/sanitizeSvg";
+import { mediaBucket } from "@/lib/media";
+import { bumpEdgeCache } from "@/lib/edgeCache";
 
-// Outside public/ on purpose. Next lists the public folder once when the
-// server starts, so a file installed later 404s until a restart — the
-// opposite of what a plugin upload should need. app/plugins/[slug]/[...file]
-// serves these from disk on every request instead.
-export const PLUGINS_DIR = path.join(process.cwd(), "plugins");
+// Cloudflare has no disk: a plugin's files live in the site's R2 bucket under
+// `_plugins/<slug>/<dir>/`, where <dir> is a fresh folder per install. R2 has
+// no rename, so an upgrade writes the new folder in full, points the database
+// row at it (manifest.dir), and only then deletes the old one — an error
+// partway leaves the working version in place. `_plugins/` is never served as
+// an upload (cf-worker keyOf, lib/media uploadKey); app/plugins/[slug]/[...file]
+// serves the files.
+const R2_PREFIX = "_plugins/";
+const DIR = /^[a-z0-9-]{1,40}$/;
+/** R2 folder of a plugin's current files, ending in "/". */
+function filesPrefix(slug: string, dir: unknown): string {
+  return `${R2_PREFIX}${slug}/${typeof dir === "string" && DIR.test(dir) ? `${dir}/` : ""}`;
+}
+
+export const PLUGIN_FILE_TYPES: Record<string, string> = {
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".woff2": "font/woff2",
+  ".woff": "font/woff",
+};
+
+/** Deletes every R2 object under a prefix. */
+async function deletePrefix(prefix: string): Promise<void> {
+  const bucket = mediaBucket();
+  let cursor: string | undefined;
+  do {
+    const page = await bucket.list({ prefix, limit: 1000, cursor });
+    if (page.objects.length) await bucket.delete(page.objects.map((o) => o.key));
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+}
+
 export const MAX_ZIP_BYTES = 5 * 1024 * 1024;
 /** What a plugin may expand to on disk — see installPluginZip. */
 export const MAX_UNPACKED_BYTES = 25 * 1024 * 1024;
@@ -112,6 +152,8 @@ export interface PluginManifest {
   settings?: PluginSetting[];
   /** A CSS min-height for the container while the script boots, e.g. "320px". */
   minHeight?: string;
+  /** Set by the installer, never read from plugin.json: the R2 folder of this install. */
+  dir?: string;
 }
 
 export interface InstalledPlugin {
@@ -166,7 +208,7 @@ export function manifestFrom(raw: unknown): PluginManifest | { error: string } {
  * both are what people produce. Every path is checked against the rules
  * above before a byte is written, so a zip cannot escape its own folder.
  */
-export async function installPluginZip(bytes: Buffer): Promise<PluginManifest> {
+export async function installPluginZip(bytes: Uint8Array): Promise<PluginManifest> {
   if (bytes.length > MAX_ZIP_BYTES) throw new Error(`The zip is larger than ${MAX_ZIP_BYTES / 1024 / 1024} MB.`);
   const zip = await JSZip.loadAsync(bytes);
 
@@ -208,53 +250,42 @@ export async function installPluginZip(bytes: Buffer): Promise<PluginManifest> {
   }
   if (files.length > 300) throw new Error("A plugin may contain at most 300 files.");
 
-  // Unpacked into a staging folder and swapped in only once every file is
-  // written. The old folder used to be deleted first, so an error partway —
-  // a bad SVG, a full disk — left a half-installed plugin that was still
-  // switched on, and the working version was already gone.
-  const dir = path.join(PLUGINS_DIR, manifest.slug);
-  const stamp = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const staging = path.join(PLUGINS_DIR, ".staging", `${manifest.slug}-${stamp}`);
-  await mkdir(staging, { recursive: true });
+  // Written to a new R2 folder; the row is pointed at it only once every file
+  // is there (see R2_PREFIX above), so a failed upgrade keeps the old version.
+  manifest.dir = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const staging = filesPrefix(manifest.slug, manifest.dir);
+  const bucket = mediaBucket();
   try {
     let unpacked = 0;
     for (const f of files) {
-      const target = path.join(staging, f.rel);
-      if (!target.startsWith(staging + path.sep)) throw new Error(`Refusing to write outside the plugin folder: ${f.rel}`);
-      await mkdir(path.dirname(target), { recursive: true });
-      let data = await f.entry.async("nodebuffer");
+      let data = await f.entry.async("uint8array");
       // The zip limit bounds the download, not what it expands to; a small
-      // zip of highly compressible files could otherwise fill the disk.
+      // zip of highly compressible files could otherwise fill the bucket.
       unpacked += data.length;
       if (unpacked > MAX_UNPACKED_BYTES) {
         throw new Error(`The plugin unpacks to more than ${MAX_UNPACKED_BYTES / 1024 / 1024} MB.`);
       }
-      if (path.extname(f.rel).toLowerCase() === ".svg") {
-        const clean = sanitizeSvg(data.toString("utf8"));
+      const ext = path.extname(f.rel).toLowerCase();
+      if (ext === ".svg") {
+        const clean = sanitizeSvg(new TextDecoder().decode(data));
         if (!clean) throw new Error(`"${f.rel}" is not a valid SVG.`);
-        data = Buffer.from(clean.svg, "utf8");
+        data = new TextEncoder().encode(clean.svg);
       }
-      await writeFile(target, data);
+      await bucket.put(staging + f.rel, data, { httpMetadata: { contentType: PLUGIN_FILE_TYPES[ext] ?? "application/octet-stream" } });
     }
-    // The swap: old out of the way, new in, old removed. Two renames on the
-    // same disk, so there is no moment with a half-written folder in place.
-    const retired = path.join(PLUGINS_DIR, ".staging", `${manifest.slug}-old-${stamp}`);
-    const hadOld = await stat(dir).then(() => true, () => false);
-    if (hadOld) await rename(dir, retired);
-    try {
-      await rename(staging, dir);
-    } catch (e) {
-      if (hadOld) await rename(retired, dir).catch(() => undefined);
-      throw e;
-    }
-    if (hadOld) await rm(retired, { recursive: true, force: true }).catch(() => undefined);
   } catch (e) {
-    await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+    await deletePrefix(staging).catch(() => undefined);
     throw e;
   }
 
   // Keep existing settings across an upgrade; drop keys the new manifest no longer has.
-  const existing = await db.query.plugins.findFirst({ where: eq(plugins.slug, manifest.slug), columns: { settings: true, enabled: true } });
+  const existing = await db.query.plugins.findFirst({ where: eq(plugins.slug, manifest.slug), columns: { settings: true, enabled: true, manifest: true } });
+  let oldDir: unknown;
+  try {
+    oldDir = existing ? (JSON.parse(existing.manifest) as PluginManifest).dir : undefined;
+  } catch {
+    oldDir = undefined;
+  }
   const keep: Record<string, unknown> = {};
   if (existing) {
     try {
@@ -286,6 +317,10 @@ export async function installPluginZip(bytes: Buffer): Promise<PluginManifest> {
       },
     });
 
+  // Only a real old folder: an empty prefix here would be the whole plugin, new files included.
+  if (typeof oldDir === "string" && DIR.test(oldDir) && oldDir !== manifest.dir) {
+    await deletePrefix(filesPrefix(manifest.slug, oldDir)).catch(() => undefined);
+  }
   invalidatePluginCache();
   return manifest;
 }
@@ -293,7 +328,7 @@ export async function installPluginZip(bytes: Buffer): Promise<PluginManifest> {
 export async function uninstallPlugin(slug: string): Promise<void> {
   if (!SLUG.test(slug)) return;
   await db.delete(plugins).where(eq(plugins.slug, slug));
-  await rm(path.join(PLUGINS_DIR, slug), { recursive: true, force: true });
+  await deletePrefix(`${R2_PREFIX}${slug}/`);
   invalidatePluginCache();
 }
 
@@ -308,7 +343,9 @@ interface Loaded {
 }
 
 let cache: { at: number; byslug: Map<string, Loaded | null> } | null = null;
-const CACHE_MS = 30_000;
+// Short: each Worker isolate keeps its own copy, and only the one that saved
+// is cleared. Pages themselves are cached at the edge, so renders are rare.
+const CACHE_MS = 3_000;
 
 /**
  * Enable/disable, or save settings: `{ enabled?, settings? }`. False when no
@@ -343,6 +380,7 @@ export async function updatePlugin(slug: string, body: { enabled?: unknown; sett
 
 export function invalidatePluginCache() {
   cache = null;
+  bumpEdgeCache(); // cached public pages carry the plugin's HTML (or its bare [slug])
 }
 
 function rowToPlugin(row: typeof plugins.$inferSelect): InstalledPlugin | null {
@@ -355,6 +393,18 @@ function rowToPlugin(row: typeof plugins.$inferSelect): InstalledPlugin | null {
     return null;
   }
   return { slug: row.slug, name: row.name, version: row.version, description: row.description, enabled: row.enabled, manifest, settings };
+}
+
+/** The R2 key of an installed plugin's file (enabled or not), or null. For app/plugins/[slug]/[...file]. */
+export async function pluginFileKey(slug: string, rel: string): Promise<string | null> {
+  if (!SLUG.test(slug)) return null;
+  const row = await db.query.plugins.findFirst({ where: eq(plugins.slug, slug), columns: { manifest: true } });
+  if (!row) return null;
+  try {
+    return filesPrefix(slug, (JSON.parse(row.manifest) as PluginManifest).dir) + rel;
+  } catch {
+    return null;
+  }
 }
 
 export async function listPlugins(): Promise<InstalledPlugin[]> {
@@ -374,7 +424,8 @@ export async function loadPlugin(slug: string): Promise<Loaded | null> {
     const row = await db.query.plugins.findFirst({ where: eq(plugins.slug, slug) });
     const plugin = row ? rowToPlugin(row) : null;
     if (plugin && plugin.enabled) {
-      const dir = path.join(PLUGINS_DIR, slug);
+      const dir = filesPrefix(slug, plugin.manifest.dir);
+      const bucket = mediaBucket();
       // Re-checked here, not trusted from the row. `manifestFrom` guards what
       // an *install* accepts, but this manifest is JSON that was stored
       // earlier — anything installed before that guard existed, or written to
@@ -382,20 +433,11 @@ export async function loadPlugin(slug: string): Promise<Loaded | null> {
       // the call that actually opens a file, so this is where it has to hold.
       const e = safeEntry(plugin.manifest.entry) ?? {};
       const read = async (f: string | undefined, fallback: string) => {
-        const name = f ?? fallback;
-        try {
-          return await readFile(path.join(dir, name), "utf8");
-        } catch {
-          return "";
-        }
+        const obj = await bucket.get(dir + (f ?? fallback)).catch(() => null);
+        return obj ? new TextDecoder().decode(await obj.arrayBuffer()) : "";
       };
       const jsFile = e.js ?? "script.js";
-      let hasJs = false;
-      try {
-        hasJs = (await stat(path.join(dir, jsFile))).isFile();
-      } catch {
-        hasJs = false;
-      }
+      const hasJs = !!(await bucket.head(dir + jsFile).catch(() => null));
       loaded = { plugin, html: await read(e.html, "index.html"), css: await read(e.css, "style.css"), hasJs, jsFile };
     }
   } catch {

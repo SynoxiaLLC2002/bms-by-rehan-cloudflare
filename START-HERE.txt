@@ -105,7 +105,7 @@ IF SOMETHING GOES WRONG
 - Anything else: run the same command again. It is safe — it skips what already
   exists and finishes what did not.
 
-What is different from BMS on cPanel: Plugins and one-click Updates are not in the
+What is different from BMS on cPanel: one-click Updates are not in the
 menu (updates are Part 4). Scheduled posts publish by themselves, and a backup of
 the site is made every night at 03:00; the database can also be restored by
 Cloudflare to any moment in the last 30 days.

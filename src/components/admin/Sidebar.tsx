@@ -30,6 +30,7 @@ import {
   Gauge,
   Mail,
   PlugZap,
+  Package,
 } from "lucide-react";
 
 type NavItem = {
@@ -67,6 +68,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
       { label: "Navigation", href: "/admin/navigation", icon: Navigation },
       { label: "Elements", href: "/admin/elements", icon: Blocks },
       { label: "Forms", href: "/admin/forms", icon: Inbox },
+      { label: "Plugins", href: "/admin/plugins", icon: Package },
     ],
   },
   {

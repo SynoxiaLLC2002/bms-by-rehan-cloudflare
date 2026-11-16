@@ -46,7 +46,7 @@ function keyOf(pathname: string): string | null {
     return null;
   }
   // `_backups/` holds the site's backups (lib/backup): account emails and all. Never public.
-  if (!key || key.startsWith("_backups/") || key.startsWith("_html/")) return null;
+  if (!key || key.startsWith("_backups/") || key.startsWith("_html/") || key.startsWith("_plugins/")) return null;
   return !key.split("/").some((p) => p === "" || p === "." || p === "..") ? key : null;
 }
 

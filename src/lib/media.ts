@@ -63,7 +63,7 @@ export function uploadKey(url: string): string | null {
     return null;
   }
   // `_backups/` (lib/backup) is private; no upload URL may name it.
-  if (key.startsWith("_backups/") || key.startsWith("_css/") || key.startsWith("_html/")) return null;
+  if (key.startsWith("_backups/") || key.startsWith("_css/") || key.startsWith("_html/") || key.startsWith("_plugins/")) return null;
   return key.split("/").some((part) => part === "" || part === "." || part === "..") ? null : key;
 }
 
