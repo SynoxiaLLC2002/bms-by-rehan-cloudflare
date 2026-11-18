@@ -1304,6 +1304,9 @@ export function offscreenCss(s: Record<string, string>): string {
   return `@media screen{.prose-content>*:nth-child(n+${after + 1}){content-visibility:auto;contain-intrinsic-size:auto 600px}}`;
 }
 
+/** Where the owner's Custom CSS starts in the site sheet (see allSiteCss). */
+export const CUSTOM_CSS_MARKER = ":root{--bms-custom:1}";
+
 export function allSiteCss(raw: Record<string, string>): string {
   // Resolve palette references once; every builder below then sees real colours.
   const s = resolvePalette(raw);
@@ -1340,8 +1343,9 @@ export function allSiteCss(raw: Record<string, string>): string {
     darkModeCss(s),
     offscreenCss(s),
     // The marker tells the public page's CSS trim (astro/src/middleware.ts) where the owner's own CSS
-    // starts: it may style elements a script adds later (ads, widgets), so it is never trimmed.
-    `/*bms:custom*/${s.custom_css || ""}`,
+    // starts: it may style elements a script adds later (ads, widgets), so it is never trimmed. A real
+    // rule, not a comment: cssTrim.ts drops a comment together with the rule after it.
+    `${CUSTOM_CSS_MARKER}${s.custom_css || ""}`,
   ].join("\n"));
 }
 

@@ -8,6 +8,7 @@ import { edgeCacheVersion } from "@/lib/edgeCache";
 import { hasSessionCookie } from "@/lib/lscache";
 import twSafelist from "virtual:bms-tw-safelist";
 import { classesIn, trimTailwind } from "./lib/twTrim";
+import { CUSTOM_CSS_MARKER } from "@/lib/siteCss";
 
 const BMS_PATHS = /^\/(?:admin|api|_next|site|uploads|fonts|og|plugins|preview|search|feed|author|category|tag|\.well-known)(?:\/|$)|\.(?:xml|txt|ico|webmanifest)$/;
 
@@ -127,10 +128,10 @@ export async function inlineSharedCss(html: string, read: (path: string) => Prom
   }
   // The inline site sheet (Speed → "Inline the site stylesheet") and the blocks' CSS, trimmed the same way:
   // every block ships all its variants (image left/right, sizes, layouts) and a page uses a few. The site
-  // sheet only up to /*bms:custom*/ (lib/siteCss.ts): the owner's own CSS may style elements a script
+  // sheet only up to CUSTOM_CSS_MARKER (lib/siteCss.ts): the owner's own CSS may style elements a script
   // adds later, so it stays whole; no marker, nothing trimmed.
   out = out.replace(/(<style data-href="\/site\/s-[^"]*"[^>]*>)([\s\S]*?)(<\/style>)/, (whole, open: string, css: string, close: string) => {
-    const at = css.indexOf("/*bms:custom*/");
+    const at = css.indexOf(CUSTOM_CSS_MARKER);
     return at < 0 ? whole : open + trimTailwind(css.slice(0, at), pageClasses, safelist) + css.slice(at) + close;
   });
   out = out.replace(/(<style data-precedence="blocks"[^>]*>)([\s\S]*?)(<\/style>)/g,
