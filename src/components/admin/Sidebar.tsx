@@ -129,7 +129,7 @@ const ADMIN_ONLY_HREFS = new Set([
  * role read as undefined, the menu fell to the editor branch, and half the
  * sidebar vanished until a refresh.
  */
-export default function Sidebar({ role, userId }: { role?: string; userId?: string }) {
+export default function Sidebar({ role, userId, screens = [] }: { role?: string; userId?: string; screens?: { slug: string; label: string }[] }) {
   const pathname = usePathname();
   const visibleGroups =
     role === "author"
@@ -147,13 +147,17 @@ export default function Sidebar({ role, userId }: { role?: string; userId?: stri
   // Every role has one: it opens your own profile at the Connect Claude box
   // (ApiTokensPanel). `exact` with a #hash never matches a pathname, so it is
   // never highlighted alongside Users.
-  const groups = userId
+  const withClaude = userId
     ? visibleGroups.map((g, i) =>
         i === visibleGroups.length - 1
           ? { ...g, items: [...g.items, { label: "Connect Claude", href: `/admin/users/${userId}#connect-claude`, icon: PlugZap, exact: true }] }
           : g
       )
     : visibleGroups;
+  // Admin screens added by plugins (the layout sends them to administrators only), in their own group.
+  const groups: { label: string; items: NavItem[] }[] = screens.length
+    ? [...withClaude, { label: "Plugins", items: screens.map((s): NavItem => ({ label: s.label, href: `/admin/p/${s.slug}`, icon: Package })) }]
+    : withClaude;
 
   function isActive(href: string, exact?: boolean) {
     if (exact) return pathname === href;

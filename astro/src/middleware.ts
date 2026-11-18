@@ -6,6 +6,8 @@ import { defineMiddleware } from "astro:middleware";
 import { env, waitUntil } from "cloudflare:workers";
 import { edgeCacheVersion } from "@/lib/edgeCache";
 import { hasSessionCookie } from "@/lib/lscache";
+import twSafelist from "virtual:bms-tw-safelist";
+import { classesIn, trimTailwind } from "./lib/twTrim";
 
 const BMS_PATHS = /^\/(?:admin|api|_next|site|uploads|fonts|og|plugins|preview|search|feed|author|category|tag|\.well-known)(?:\/|$)|\.(?:xml|txt|ico|webmanifest)$/;
 
@@ -85,7 +87,41 @@ function secure(res: Response): Response {
   return out;
 }
 
-export const onRequest = defineMiddleware(async (context, next) => secure(await route(context.url, context.request, next)));
+// The shared stylesheet (/_astro/*.css, Tailwind, ~27 KB) is built as a file (astro.config.mjs) and put
+// into each page here, trimmed to the classes that page uses (lib/twTrim.ts, ~3 KB): no request before
+// first paint, and not the whole file in every page. The file is read once per isolate from the build's
+// own assets; a page that cannot be trimmed (no safelist) gets it whole, as before; one that cannot be
+// read keeps the link, which works (immutable, cached a year).
+const sharedCss = new Map<string, string>();
+const SAFELIST = new Set(twSafelist);
+export async function inlineSharedCss(html: string, read: (path: string) => Promise<string | null>): Promise<string> {
+  let out = html;
+  let pageClasses: Set<string> | null = null;
+  for (const m of html.matchAll(/<link rel="stylesheet" href="(\/_astro\/[\w.-]+\.css)"[^>]*>/g)) {
+    let css = sharedCss.get(m[1]) ?? null;
+    if (css === null) {
+      css = await read(m[1]);
+      if (css === null) continue;
+      sharedCss.set(m[1], css);
+    }
+    if (SAFELIST.size) css = trimTailwind(css, (pageClasses ??= classesIn(html)), SAFELIST);
+    // `</style` inside the CSS would end the element early.
+    const tag = `<style data-href="${m[1]}">${css.replace(/<\/style/gi, "<\\/style")}</style>`;
+    out = out.replace(m[0], () => tag);
+  }
+  return out;
+}
+const readAsset = async (path: string): Promise<string | null> => {
+  const res = await (env as unknown as { ASSETS: { fetch: (r: Request) => Promise<Response> } }).ASSETS.fetch(new Request(`https://assets.local${path}`));
+  return res.ok ? res.text() : null;
+};
+async function withSharedCss(res: Response): Promise<Response> {
+  if (res.status !== 200 || !(res.headers.get("content-type") ?? "").includes("text/html")) return res;
+  const html = await res.text();
+  return new Response(await inlineSharedCss(html, readAsset), res);
+}
+
+export const onRequest = defineMiddleware(async (context, next) => secure(await route(context.url, context.request, () => next().then(withSharedCss))));
 
 async function route(url: URL, request: Request, next: () => Promise<Response>): Promise<Response> {
   const context = { url, request };

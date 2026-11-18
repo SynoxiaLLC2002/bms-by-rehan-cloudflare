@@ -108,6 +108,12 @@ export default function PluginsPanel({ initial }: { initial: InstalledPlugin[] }
                         {!p.enabled && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">OFF</span>}
                       </p>
                       {p.description && <p className="truncate text-xs text-slate-500">{p.description}</p>}
+                      {/* what switching it on adds to the admin: an outside page, embedded, so the admin can see where it goes */}
+                      {p.manifest.admin && (
+                        <p className="truncate text-xs text-sky-700" title={p.manifest.admin.url}>
+                          Adds the admin screen &ldquo;{p.manifest.admin.label}&rdquo;: shows {new URL(p.manifest.admin.url).host} inside this admin
+                        </p>
+                      )}
                     </div>
                     <button type="button" onClick={() => copy(shortcode)} className="flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-700 hover:border-sky-400" title="Copy shortcode">
                       {shortcode} {copied === shortcode ? <Check size={11} className="text-emerald-500" /> : <Copy size={11} className="text-slate-400" />}

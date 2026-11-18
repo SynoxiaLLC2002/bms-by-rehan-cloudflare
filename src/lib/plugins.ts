@@ -152,6 +152,11 @@ export interface PluginManifest {
   settings?: PluginSetting[];
   /** A CSS min-height for the container while the script boots, e.g. "320px". */
   minHeight?: string;
+  /**
+   * An admin screen: a sidebar item (label) that opens this address, embedded full size inside the admin.
+   * Only https addresses; the page is another site, so it keeps its own login and cannot reach the admin's.
+   */
+  admin?: { label: string; url: string };
   /** Set by the installer, never read from plugin.json: the R2 folder of this install. */
   dir?: string;
 }
@@ -198,7 +203,29 @@ export function manifestFrom(raw: unknown): PluginManifest | { error: string } {
     attributes: Array.isArray(m.attributes) ? (m.attributes as PluginManifest["attributes"]) : undefined,
     settings,
     minHeight: typeof m.minHeight === "string" && /^[\d.]+(px|rem|em|vh)$/.test(m.minHeight) ? m.minHeight : undefined,
+    admin: adminScreen(m.admin),
   };
+}
+
+/** The manifest's admin block: a short label and an absolute https address, or undefined. */
+function adminScreen(raw: unknown): PluginManifest["admin"] {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const a = raw as Record<string, unknown>;
+  const label = typeof a.label === "string" ? a.label.trim().slice(0, 40) : "";
+  if (!label || typeof a.url !== "string") return undefined;
+  try {
+    const u = new URL(a.url);
+    return u.protocol === "https:" && !u.username && !u.password ? { label, url: u.href } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Enabled plugins that add an admin screen, for the sidebar and /admin/p/[slug]. */
+export async function adminScreens(): Promise<{ slug: string; label: string; url: string }[]> {
+  return (await listPlugins())
+    .filter((p) => p.enabled && p.manifest.admin)
+    .map((p) => ({ slug: p.slug, label: p.manifest.admin!.label, url: p.manifest.admin!.url }));
 }
 
 /**

@@ -4,6 +4,8 @@ import { SessionProvider } from "next-auth/react";
 import Sidebar from "@/components/admin/Sidebar";
 import { getSiteSettings } from "@/lib/settings";
 import { adminDir, adminLang } from "@/lib/locale";
+import { isAdmin } from "@/lib/authz";
+import { adminScreens } from "@/lib/plugins";
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   // Started together, not one after the other. Neither depends on the other,
@@ -20,6 +22,8 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   if (!session?.user?.id) {
     redirect("/admin/login");
   }
+  // Plugins with an admin screen get a sidebar item; administrators only, like the Plugins screen.
+  const screens = isAdmin(session) ? await adminScreens().catch(() => []) : [];
 
   // The root layout renders one `<html>` for the whole application and sets it
   // from the *site's* language — so an Urdu site was turning the CMS
@@ -34,7 +38,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
         dir={adminDir(settings)}
         className="flex min-h-screen bg-slate-50"
       >
-        <Sidebar role={(session.user as { role?: string }).role} userId={session.user.id} />
+        <Sidebar role={(session.user as { role?: string }).role} userId={session.user.id} screens={screens.map(({ slug, label }) => ({ slug, label }))} />
         <div className="flex-1 flex flex-col min-w-0">
           {children}
         </div>

@@ -12,6 +12,6 @@ export function inlineStoredCss(html: string): string {
     if (css === null) return tag;
     const precedence = (tag.match(/\sdata-precedence="([^"]*)"/i) || [])[1];
     // `</style` inside the CSS would end the element early.
-    return `<style data-href="/site/${m![1]}.css"${precedence ? ` data-precedence="${precedence}"` : ""}>${css.replace(/<\/style/gi, "<\/style")}</style>`;
+    return `<style data-href="/site/${m![1]}.css"${precedence ? ` data-precedence="${precedence}"` : ""}>${css.replace(/<\/style/gi, "<\\/style")}</style>`;
   });
 }
