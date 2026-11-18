@@ -23,6 +23,7 @@ interface Env {
   MEDIA: {
     head(key: string): Promise<{ httpEtag: string } | null>;
     get(key: string): Promise<R2Obj | null>;
+    put(key: string, value: ArrayBuffer, options?: { httpMetadata?: { contentType?: string } }): Promise<unknown>;
   };
   IMAGES?: {
     input(s: ReadableStream): { transform(o: Record<string, unknown>): { output(o: { format: string; quality?: number }): Promise<{ response(): Response }> } };
@@ -36,6 +37,7 @@ const YEAR = "public, max-age=31536000, immutable";
 // An upload is never a document: no scripts, no frames, even for an SVG.
 const SAFE = { "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox" };
 const RESIZABLE = /\.(?:jpe?g|png|webp|avif)$/i;
+const SNAP_WIDTHS = [384, 640, 828, 1200, 1920];
 const notFound = () => new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
 
 function keyOf(pathname: string): string | null {
@@ -46,7 +48,7 @@ function keyOf(pathname: string): string | null {
     return null;
   }
   // `_backups/` holds the site's backups (lib/backup): account emails and all. Never public.
-  if (!key || key.startsWith("_backups/") || key.startsWith("_html/") || key.startsWith("_plugins/")) return null;
+  if (!key || key.startsWith("_backups/") || key.startsWith("_html/") || key.startsWith("_plugins/") || key.startsWith("_variants/")) return null;
   return !key.split("/").some((p) => p === "" || p === "." || p === "..") ? key : null;
 }
 
@@ -59,23 +61,35 @@ async function firstExisting(env: Env, keys: string[]): Promise<{ key: string; e
   return null;
 }
 
-/** `key` resized to `width` in `format`, made once per original version and data centre. */
+/** `key` resized to `width` in `format`, made once per original version (kept in R2) and cached per data centre. */
 async function variant(request: Request, ctx: Ctx, env: Env, src: { key: string; etag: string }, width: number, format: string, quality: number): Promise<Response> {
   const cache = (caches as unknown as { default: Cache }).default;
   const cacheKey = `${new URL(request.url).origin}/__variant/${format}/${width}/${quality}/${encodeURIComponent(src.key)}?v=${encodeURIComponent(src.etag)}`;
   const hit = await cache.match(cacheKey);
   if (hit) return hit;
 
-  const original = await env.MEDIA.get(src.key);
-  if (!original) return notFound();
   let res: Response;
   const asIs = (o: R2Obj, cacheControl = YEAR) => new Response(o.body, { headers: { "Content-Type": o.httpMetadata?.contentType ?? "application/octet-stream", "Cache-Control": cacheControl, ...SAFE } });
-  if (!env.IMAGES || !RESIZABLE.test(src.key) || env.NO_RESIZE === "1") {
-    res = asIs(original); // NO_RESIZE: the site's uploads are already small WebP; no Cloudflare Images transformations at all
+  // Every resized copy is kept in R2 (`_variants/`, never public: keyOf refuses it), named after the original's
+  // version. Cloudflare Images counts each unique transformation once a month per account (5,000 free), and a
+  // Cache API copy lives in one data centre for a while: without this, every image was made again every month
+  // in every location, and an account with several sites ran out (error 9422, 2026-11-18: every image and icon
+  // fell back to the full-size original). Now each copy is made once, ever.
+  // shortcut: a replaced or deleted upload leaves its old variants in R2 (small files under a dead etag); clean them up by prefix if storage ever matters.
+  const stored = `_variants/${format.split("/")[1]}/${width}/${quality}/${src.key}@${src.etag.replace(/[^\w-]/g, "")}`;
+  const kept = await env.MEDIA.get(stored);
+  const original = kept ? null : await env.MEDIA.get(src.key);
+  if (!kept && !original) return notFound();
+  if (kept) {
+    res = asIs(kept);
+  } else if (!env.IMAGES || !RESIZABLE.test(src.key) || env.NO_RESIZE === "1") {
+    res = asIs(original!); // NO_RESIZE: the site's uploads are already small WebP; no Cloudflare Images transformations at all
   } else {
     try {
-      const out = await env.IMAGES.input(original.body).transform({ width, fit: "scale-down" }).output({ format, quality });
-      res = new Response(out.response().body, { headers: { "Content-Type": format, "Cache-Control": YEAR, Vary: "Accept", ...SAFE } });
+      const out = await env.IMAGES.input(original!.body).transform({ width, fit: "scale-down" }).output({ format, quality });
+      const bytes = await out.response().arrayBuffer();
+      ctx.waitUntil(env.MEDIA.put(stored, bytes, { httpMetadata: { contentType: format } }).catch(() => undefined));
+      res = new Response(bytes, { headers: { "Content-Type": format, "Cache-Control": YEAR, ...SAFE } });
     } catch (e) {
       // A refused transform (9422: the account's free transformations are used up) used to answer 500 and show a
       // broken image. Serve the original instead, cached for an hour only, so the resize is tried again later.
@@ -94,8 +108,11 @@ async function serveUpload(request: Request, url: URL, env: Env, ctx: Ctx): Prom
   if (!key) return notFound();
   const obj = await env.MEDIA.get(key);
   if (obj) {
+    // A PDF is a download: Chrome's viewer refuses sandboxed PDFs, and an attachment keeps
+    // any script inside the file off this origin.
+    const pdf = /\.pdf$/i.test(key) ? { "Content-Disposition": `attachment; filename="${key.split("/").pop()!.replace(/[^\w.-]/g, "_")}"` } : {};
     return new Response(request.method === "HEAD" ? null : obj.body, {
-      headers: { "Content-Type": obj.httpMetadata?.contentType ?? "application/octet-stream", "Content-Length": String(obj.size), ETag: obj.httpEtag, "Cache-Control": YEAR, ...SAFE },
+      headers: { "Content-Type": obj.httpMetadata?.contentType ?? "application/octet-stream", "Content-Length": String(obj.size), ETag: obj.httpEtag, "Cache-Control": YEAR, ...SAFE, ...pdf },
     });
   }
   // A logo size (lib/logoSrc): made from the original, as WebP.
@@ -115,8 +132,11 @@ async function optimise(request: Request, url: URL, env: Env, ctx: Ctx): Promise
   }
   const src = await firstExisting(env, [key]);
   if (!src) return notFound();
-  const format = /image\/avif/.test(request.headers.get("Accept") ?? "") ? "image/avif" : "image/webp";
-  return variant(request, ctx, env, src, w, format, q);
+  // Few distinct copies per image (each one is a Cloudflare Images transformation, see variant): the srcset's
+  // 10 widths snap up to 5, and WebP only (AVIF as well doubled them for ~20% smaller files). Up, so a
+  // picture is never blurrier than asked; `scale-down` never enlarges a small original.
+  const width = SNAP_WIDTHS.find((s) => s >= w) ?? SNAP_WIDTHS[SNAP_WIDTHS.length - 1];
+  return variant(request, ctx, env, src, width, "image/webp", q);
 }
 
 /**

@@ -6,7 +6,7 @@ import react from "@astrojs/react";
 import { fileURLToPath } from "node:url";
 import { build as esbuild } from "esbuild";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const at = (p) => fileURLToPath(new URL(p, import.meta.url));
 const shim = (name, file) => ({ find: new RegExp(`^${name.replace(/[/.]/g, "\$&")}$`), replacement: at(`./shims/${file}`) });
@@ -28,11 +28,14 @@ const vanillaScript = () => ({
   },
 });
 
-// The Tailwind classes a page can gain after load (virtual:bms-tw-safelist), for src/lib/twTrim.ts to
-// keep when it trims Tailwind to the page: the quoted strings of every "use client" file (the same scan
-// as ../scripts/tw-safelist.mjs, which does this for server.js) plus every string in this edition's own
-// scripts (vanilla.ts toggles classes with no React). Over-inclusive on purpose: a stray word costs bytes.
-const SAFELIST_ROOTS = ["src/components/frontend", "src/components/shared", "src/app/(site)", "src/app/(author)", "src/lib"];
+// The Tailwind classes a page can gain after load (virtual:bms-tw-safelist), for src/lib/twTrim.ts to keep
+// when it trims Tailwind to the page. Per island, not one list for every page: an island's classes are the
+// quoted strings of its component and of every file of ours it imports (what it may add after hydration),
+// and a page keeps only the classes of the islands it contains (<bms-island data-c="id#export">). Plus
+// "vanilla", the strings of this edition's own scripts, for pages with <bms-island data-v> (vanilla.ts toggles
+// classes with no React); "always", classes scripts add outside any component; and "all", every island's
+// classes together, for an island this map does not know (a component added before islands.ts is regenerated).
+// Over-inclusive on purpose: a stray word costs bytes, a missing class costs a broken page.
 const SAFELIST_ALWAYS = ["is-open", "is-stuck", "is-shown", "hidden", "sr-only"];
 function* walkFiles(dir) {
   for (const name of readdirSync(dir)) {
@@ -48,14 +51,48 @@ const twSafelist = () => ({
     if (id !== "\0virtual:bms-tw-safelist") return null;
     const STRING = /"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`]*)`/g;
     const TOKEN = /[!]?[a-zA-Z][\w:./[\]%()#,-]*/g;
-    const out = new Set(SAFELIST_ALWAYS);
-    const read = (file) => { for (const s of readFileSync(file, "utf8").matchAll(STRING)) for (const m of (s[1] ?? s[2] ?? s[3] ?? "").matchAll(TOKEN)) out.add(m[0]); };
-    for (const r of SAFELIST_ROOTS) {
-      let dir; try { dir = at(`../${r}`); statSync(dir); } catch { continue; }
-      for (const file of walkFiles(dir)) if (/^\s*(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*["']use client["']/.test(readFileSync(file, "utf8"))) read(file);
-    }
-    for (const file of walkFiles(at("./src/scripts"))) read(file);
-    return `export default ${JSON.stringify([...out])};`;
+    const IMPORT = /(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/g;
+    const src = at("../src/");
+    const resolve = (spec, from) => {
+      const base = spec.startsWith("@/") ? join(src, spec.slice(2)) : spec.startsWith(".") ? join(dirname(from), spec) : null;
+      if (!base) return null;
+      for (const ext of ["", ".tsx", ".ts", "/index.tsx", "/index.ts"]) {
+        try { if (statSync(base + ext).isFile()) return base + ext; } catch { /* try the next one */ }
+      }
+      return null;
+    };
+    const componentsDir = join(src, "components");
+    const tokensOf = (file) => {
+      const out = new Set(), seen = new Set();
+      const visit = (f) => {
+        if (seen.has(f)) return;
+        seen.add(f);
+        const text = readFileSync(f, "utf8");
+        for (const s of text.matchAll(STRING)) for (const m of (s[1] ?? s[2] ?? s[3] ?? "").matchAll(TOKEN)) out.add(m[0]);
+        // Into other components only: lib/ files name every theme class as strings (siteCss.ts builds the CSS
+        // from them), which made every rule look addable and nothing was trimmed (measured 2026-11-18).
+        for (const m of text.matchAll(IMPORT)) { const r = resolve(m[1], f); if (r && /\.tsx?$/.test(r) && r.startsWith(componentsDir)) visit(r); }
+      };
+      visit(file);
+      return out;
+    };
+    // islands.ts names every island id; lazy.tsx re-exports the blocks, addressed as "frontend/blocks/lazy#<Name>".
+    const ids = [...readFileSync(at("./src/lib/islands.ts"), "utf8").matchAll(/^\s*"([^"]+)":/gm)].map((m) => m[1]);
+    const lazyFile = join(src, "components/frontend/blocks/lazy.tsx");
+    const islands = {};
+    const all = new Set(SAFELIST_ALWAYS);
+    const add = (key, file) => {
+      if (!file) return;
+      const t = tokensOf(file);
+      islands[key] = [...t];
+      for (const c of t) all.add(c);
+    };
+    for (const id of ids) add(id, resolve("@/components/" + id, src));
+    for (const m of readFileSync(lazyFile, "utf8").matchAll(/export const (\w+) = dynamic\(\(\) => import\("([^"]+)"\)\)/g))
+      add("frontend/blocks/lazy#" + m[1], resolve(m[2], lazyFile));
+    const vanilla = new Set();
+    for (const file of walkFiles(at("./src/scripts"))) for (const c of tokensOf(file)) { vanilla.add(c); all.add(c); }
+    return `export default ${JSON.stringify({ always: SAFELIST_ALWAYS, vanilla: [...vanilla], islands, all: [...all] })};`;
   },
 });
 

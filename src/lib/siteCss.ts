@@ -1339,7 +1339,9 @@ export function allSiteCss(raw: Record<string, string>): string {
     footerRowCss(s),
     darkModeCss(s),
     offscreenCss(s),
-    s.custom_css || "",
+    // The marker tells the public page's CSS trim (astro/src/middleware.ts) where the owner's own CSS
+    // starts: it may style elements a script adds later (ads, widgets), so it is never trimmed.
+    `/*bms:custom*/${s.custom_css || ""}`,
   ].join("\n"));
 }
 

@@ -35,8 +35,14 @@ export const speedDefaults = {
   browser_ttl_fonts: "31536000",
 
   // ── Page optimisation ────────────────────────────────────────────────
-  /** Inline the site stylesheet instead of linking it: one render-blocking request fewer. */
-  css_inline_site: "false",
+  /**
+   * Inline the site stylesheet instead of linking it: one render-blocking request fewer.
+   * ON by default since 2026-11-18 (Cloudflare edition): with Tailwind already inline and trimmed
+   * (astro/src/middleware.ts) this link was the only request before first paint. Measured on
+   * a live site, Lighthouse mobile: home 90-95 -> 100, first paint 2.4 s -> 1.1 s.
+   * A site that saved "false" keeps it.
+   */
+  css_inline_site: "true",
   /**
    * Let the browser skip laying out and painting the part of the page
    * nobody has scrolled to yet (`content-visibility: auto`).

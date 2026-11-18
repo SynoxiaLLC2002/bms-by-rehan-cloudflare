@@ -739,7 +739,7 @@ export default function SpeedPage() {
             <>
               <div className="card p-5">
                 <h2 className="font-semibold text-sm mb-4">CSS</h2>
-                <Toggle s={s} set={set} k="css_inline_site" invert label="Inline the site stylesheet" help="Puts the theme's CSS (colours, fonts, layout — about 9 KB) in the page instead of a separate file. One render-blocking request fewer, at the cost of that CSS not being cached between pages. Worth it on a site where most visits are one page; turn off if visitors browse many." />
+                <Toggle s={s} set={set} k="css_inline_site" invert label="Inline the site stylesheet" help="Puts the theme's CSS (colours, fonts, layout — about 9 KB) in the page instead of a separate file. With it on, nothing has to download before the page shows (on by default: measured about twice as fast to first paint on a phone). The cost is that this CSS is not cached between pages; turn it off only if your visitors open many pages each and you have measured it faster." />
                 <p className="text-xs text-slate-400 ml-[46px] -mt-1">Minify and combine are not options: Next already minifies and splits CSS and JavaScript at build time.</p>
               </div>
               <div className="card p-5">

@@ -27,6 +27,9 @@ async function cachedFile(request: Request): Promise<Response> {
   if (hit) return hit;
   const res = await toBms(request);
   if (res.status !== 200) return res;
+  // An answer the BMS Worker marks short-lived (an icon or image served unresized because Cloudflare
+  // Images refused, see cf-worker.ts / lib/siteIcon.ts) is passed on, not kept for a year.
+  if (!fixed && /max-age=(?:0|[1-9]\d{0,3})\b|no-store/.test(res.headers.get("cache-control") ?? "")) return res;
   const out = new Response(res.body, res);
   out.headers.delete("set-cookie");
   out.headers.delete("vary");
@@ -90,13 +93,26 @@ function secure(res: Response): Response {
 // The shared stylesheet (/_astro/*.css, Tailwind, ~27 KB) is built as a file (astro.config.mjs) and put
 // into each page here, trimmed to the classes that page uses (lib/twTrim.ts, ~3 KB): no request before
 // first paint, and not the whole file in every page. The file is read once per isolate from the build's
-// own assets; a page that cannot be trimmed (no safelist) gets it whole, as before; one that cannot be
-// read keeps the link, which works (immutable, cached a year).
+// own assets; one that cannot be read keeps the link, which works (immutable, cached a year).
 const sharedCss = new Map<string, string>();
-const SAFELIST = new Set(twSafelist);
+
+/** The classes this page can gain after load: those of the islands it contains (astro.config.mjs builds the map). */
+export function pageSafelist(html: string, safe = twSafelist): Set<string> {
+  const out = new Set(safe.always);
+  let vanilla = false;
+  for (const m of html.matchAll(/<bms-island data-([cv])="([^"]+)"/g)) {
+    if (m[1] === "v") { vanilla = true; continue; }
+    // An island the map does not know keeps every island's classes: bytes, never a broken page.
+    for (const c of safe.islands[m[2]] ?? safe.islands[m[2].split("#")[0]] ?? safe.all) out.add(c);
+  }
+  if (vanilla) for (const c of safe.vanilla) out.add(c);
+  return out;
+}
+
 export async function inlineSharedCss(html: string, read: (path: string) => Promise<string | null>): Promise<string> {
   let out = html;
-  let pageClasses: Set<string> | null = null;
+  const pageClasses = classesIn(html);
+  const safelist = pageSafelist(html);
   for (const m of html.matchAll(/<link rel="stylesheet" href="(\/_astro\/[\w.-]+\.css)"[^>]*>/g)) {
     let css = sharedCss.get(m[1]) ?? null;
     if (css === null) {
@@ -104,11 +120,21 @@ export async function inlineSharedCss(html: string, read: (path: string) => Prom
       if (css === null) continue;
       sharedCss.set(m[1], css);
     }
-    if (SAFELIST.size) css = trimTailwind(css, (pageClasses ??= classesIn(html)), SAFELIST);
+    css = trimTailwind(css, pageClasses, safelist);
     // `</style` inside the CSS would end the element early.
     const tag = `<style data-href="${m[1]}">${css.replace(/<\/style/gi, "<\\/style")}</style>`;
     out = out.replace(m[0], () => tag);
   }
+  // The inline site sheet (Speed → "Inline the site stylesheet") and the blocks' CSS, trimmed the same way:
+  // every block ships all its variants (image left/right, sizes, layouts) and a page uses a few. The site
+  // sheet only up to /*bms:custom*/ (lib/siteCss.ts): the owner's own CSS may style elements a script
+  // adds later, so it stays whole; no marker, nothing trimmed.
+  out = out.replace(/(<style data-href="\/site\/s-[^"]*"[^>]*>)([\s\S]*?)(<\/style>)/, (whole, open: string, css: string, close: string) => {
+    const at = css.indexOf("/*bms:custom*/");
+    return at < 0 ? whole : open + trimTailwind(css.slice(0, at), pageClasses, safelist) + css.slice(at) + close;
+  });
+  out = out.replace(/(<style data-precedence="blocks"[^>]*>)([\s\S]*?)(<\/style>)/g,
+    (_w, open: string, css: string, close: string) => open + trimTailwind(css, pageClasses, safelist) + close);
   return out;
 }
 const readAsset = async (path: string): Promise<string | null> => {

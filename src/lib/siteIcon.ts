@@ -21,6 +21,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
+import type { R2Bucket } from "@/lib/media";
 
 /** The one setting this reads; typed loosely because settings are a string map. */
 type IconSettings = { site_favicon?: string };
@@ -38,7 +39,9 @@ export function iconSource(s: IconSettings): string {
 export function iconHash(s: IconSettings): string {
   // "|2": icons rendered before Cloudflare Images made real PNGs were the raw
   // WebP under a .png name, cached for a year; a new URL leaves them behind.
-  const text = iconSource(s) + "|2";
+  // "|3" (2026-11-18): when the account's Images allowance ran out, the 512 px original was
+  // served under every size, also for a year; same cure.
+  const text = iconSource(s) + "|3";
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
     h ^= text.charCodeAt(i);
@@ -113,7 +116,8 @@ function icoFromPng(png: Buffer, size: number): Buffer {
   return Buffer.concat([header, entry, png]);
 }
 
-type Rendered = { body: Buffer; type: string };
+/** `resized: false` = the source handed out as it is (no sharp, Images refused): never cached for long. */
+type Rendered = { body: Buffer; type: string; resized?: boolean };
 
 type ImagesBinding = {
   input(s: ReadableStream): { transform(o: Record<string, unknown>): { output(o: { format: string }): Promise<{ response(): Response }> } };
@@ -124,15 +128,25 @@ type ImagesBinding = {
  * for photos). A Worker has no sharp, so without this the icon routes handed
  * out the uploaded WebP under a .png name, and Chrome showed a blank tab icon.
  * Null off Cloudflare, or for a source Images cannot read (an SVG).
+ * Each size is made once and kept in R2 (`_variants/icon/`, named after the source's SHA-1), like the
+ * photos in cf-worker.ts: Images counts every transformation against a monthly allowance, and when it
+ * ran out (9422) every icon fell back to the 512 px original (18 KB for a 32 px tab icon).
  */
 async function pngViaImages(bytes: Buffer, size: number): Promise<Buffer | null> {
   try {
-    const images = (getCloudflareContext().env as { IMAGES?: ImagesBinding }).IMAGES;
+    const env = getCloudflareContext().env as { IMAGES?: ImagesBinding; MEDIA?: R2Bucket };
+    const digest = Buffer.from(await crypto.subtle.digest("SHA-1", new Uint8Array(bytes))).toString("hex");
+    const key = `_variants/icon/${size}/${digest}.png`;
+    const kept = await env.MEDIA?.get(key).catch(() => null);
+    if (kept) return Buffer.from(await kept.arrayBuffer());
+    const images = env.IMAGES;
     if (!images) return null;
     const out = await images.input(new Response(new Uint8Array(bytes)).body!).transform({ width: size, height: size, fit: "cover" }).output({ format: "image/png" });
     const res = out.response();
     if (!res.ok || !(res.headers.get("content-type") ?? "").includes("png")) return null;
-    return Buffer.from(await res.arrayBuffer());
+    const png = Buffer.from(await res.arrayBuffer());
+    await env.MEDIA?.put(key, png, { httpMetadata: { contentType: "image/png" } }).catch(() => undefined);
+    return png;
   } catch {
     return null;
   }
@@ -164,20 +178,20 @@ export function renderIcon(
           .png({ compressionLevel: 9 })
           .toBuffer();
         return format === "ico"
-          ? { body: icoFromPng(png, size), type: "image/x-icon" }
-          : { body: png, type: "image/png" };
+          ? { body: icoFromPng(png, size), type: "image/x-icon", resized: true }
+          : { body: png, type: "image/png", resized: true };
       } catch {
         const png = await pngViaImages(bytes, size);
-        if (png) return format === "ico" ? { body: icoFromPng(png, size), type: "image/x-icon" } : { body: png, type: "image/png" };
+        if (png) return format === "ico" ? { body: icoFromPng(png, size), type: "image/x-icon", resized: true } : { body: png, type: "image/png", resized: true };
         // No sharp on this host, or an image it cannot read: hand out the
         // source unchanged rather than a 404. A wrong-sized icon is still an
         // icon; a missing one is the placeholder.
-        return { body: bytes, type: guessType(src) };
+        return { body: bytes, type: guessType(src), resized: false };
       }
     })();
     cache.set(key, pending);
     // A failed render must not be remembered forever.
-    pending.then((r) => { if (!r) cache.delete(key); }, () => cache.delete(key));
+    pending.then((r) => { if (!r || r.resized === false) cache.delete(key); }, () => cache.delete(key));
   }
   return pending;
 }

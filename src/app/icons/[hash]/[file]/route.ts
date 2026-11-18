@@ -18,7 +18,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ hash: s
   const icon = await renderIcon(settings, siteUrl(settings), size, "png");
   if (!icon) return new NextResponse(null, { status: 404, headers: { "Cache-Control": "no-store" } });
 
-  const current = hash === iconHash(settings);
+  // A source handed out unresized (Images refused) is not cached, so the real icon replaces it soon.
+  const current = hash === iconHash(settings) && icon.resized !== false;
   return new NextResponse(new Uint8Array(icon.body), {
     headers: {
       "Content-Type": icon.type,

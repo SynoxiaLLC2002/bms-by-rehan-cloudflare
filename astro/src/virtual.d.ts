@@ -4,8 +4,8 @@ declare module "virtual:bms-vanilla" {
   export default code;
 }
 
-/** Tailwind classes a page can gain after load (astro.config.mjs), kept by lib/twTrim.ts. */
+/** Tailwind classes a page can gain after load, per island (astro.config.mjs), kept by lib/twTrim.ts. */
 declare module "virtual:bms-tw-safelist" {
-  const classes: string[];
-  export default classes;
+  const safelist: { always: string[]; vanilla: string[]; islands: Record<string, string[]>; all: string[] };
+  export default safelist;
 }

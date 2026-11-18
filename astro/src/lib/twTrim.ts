@@ -27,6 +27,22 @@ export function cssRules(css: string): string[] {
   return out;
 }
 
+/** A selector list split at its top-level commas (not the ones inside :is(.a,.b) or [attr="a,b"]). */
+function splitSelectors(list: string): string[] {
+  const out: string[] = [];
+  let depth = 0, quote = "", start = 0;
+  for (let i = 0; i < list.length; i++) {
+    const ch = list[i];
+    if (quote) { if (ch === quote && list[i - 1] !== "\\") quote = ""; continue; }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === "(" || ch === "[") depth++;
+    else if (ch === ")" || ch === "]") depth--;
+    else if (ch === "," && depth === 0) { out.push(list.slice(start, i)); start = i + 1; }
+  }
+  out.push(list.slice(start));
+  return out;
+}
+
 export function trimTailwind(css: string, pageClasses: Set<string>, safelist: Set<string>): string {
   const alive = (cls: string) => pageClasses.has(cls) || safelist.has(cls);
   const keepRule = (rule: string): string => {
@@ -39,8 +55,12 @@ export function trimTailwind(css: string, pageClasses: Set<string>, safelist: Se
       const inner = cssRules(rule.slice(brace + 1, rule.lastIndexOf("}"))).map(keepRule).filter(Boolean).join("");
       return inner ? `${prelude}{${inner}}` : "";
     }
-    const live = prelude.split(",").some((sel) => {
-      const classes = [...sel.matchAll(/\.((?:\\.|[\w-])+)/g)].map((m) => m[1].replace(/\\/g, ""));
+    const live = splitSelectors(prelude).some((sel) => {
+      // A class inside :not() / :is() / :where() / :has() is not one the element must have
+      // (`.menu:not(.is-open)` applies exactly when is-open is missing): only the classes outside count.
+      let outer = sel, prev = "";
+      while (outer !== prev) { prev = outer; outer = outer.replace(/:(?:not|is|where|has)\([^()]*\)/g, ""); }
+      const classes = [...outer.matchAll(/\.((?:\\.|[\w-])+)/g)].map((m) => m[1].replace(/\\/g, ""));
       return classes.length === 0 || classes.every(alive);
     });
     return live ? rule : "";
@@ -61,5 +81,9 @@ if (typeof process !== "undefined" && process.argv?.includes("--self-test")) {
   ok(out.includes("@font-face{font-family:A}"), "keeps @font-face whole");
   ok(!out.includes(".a.b{"), "drops a selector when one of its classes is missing");
   ok(!out.includes(".bmsx .flex"), "drops a descendant selector whose ancestor class is missing");
+  const neg = trimTailwind(".flex:not(.is-open){a:b}.flex:is(.x,.y){c:d}.gap-4:not(:where(.z)){e:f}.nope:not(.flex){g:h}", page, new Set());
+  ok(neg.includes(".flex:not(.is-open){a:b}"), "keeps a rule whose missing class is only inside :not()");
+  ok(neg.includes(".flex:is(.x,.y){c:d}") && neg.includes(".gap-4:not(:where(.z)){e:f}"), "ignores classes inside :is() and nested :where()");
+  ok(!neg.includes(".nope"), "still drops a rule whose own class is missing");
   console.log("twTrim self-test: ok,", css.length, "->", out.length, "bytes");
 }
