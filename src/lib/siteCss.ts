@@ -1197,7 +1197,10 @@ export function offCanvasCss(s: Record<string, string>): string {
     // the header's menu (also a row), so a five-link menu ran sideways off a
     // phone and pushed the header button out of view. Inside the panel both
     // are a column: one link per line, the button full width underneath.
-    `.offcanvas>.flex.items-center{flex-direction:column;align-items:stretch;gap:1.25rem}`,
+    // `>bms-slot>`: on the Cloudflare (Astro) pages the row sits in an island's display:contents
+    // <bms-slot>, so the direct-child rule missed it and a header with a search beside the menu
+    // squeezed the menu into a narrow column at the panel's edge (seen 2026-11-18).
+    `.offcanvas>.flex.items-center,.offcanvas>bms-slot>.flex.items-center{flex-direction:column;align-items:stretch;gap:1.25rem}`,
     `.offcanvas .hnav{display:flex;flex-direction:column;align-items:stretch}`,
     `.offcanvas .hnav-link{display:block;width:100%;padding:.8rem .25rem;font-size:1.0625rem}`,
     `.offcanvas .hnav-underline{display:none}`,
